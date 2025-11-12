@@ -17,13 +17,13 @@ data Category
   | SmallStraight | LargeStraight | Yahtzee | Chance
   deriving (Show, Eq, Ord, Enum, Bounded, Generic, A.FromJSON, A.ToJSON, A.FromJSONKey, A.ToJSONKey)
 
--- Danh sách tất cả Category (Giận nguyên)
+-- Danh sách tất cả Category (Giữ nguyên)
 allCategories :: [Category]
 allCategories = [Aces .. Chance]
 
 type PlayerID = Int
 type Dice = [Int]
-type ScoreCard = M.Map Category (Maybe Int) -- SỬA LỖI 1: Dùng 'ScoreCard'
+type ScoreCard = M.Map Category (Maybe Int)
 
 data Mode = Human | Machine deriving (Eq, Show, Read, Generic, A.ToJSON, A.FromJSON)
 
@@ -38,19 +38,19 @@ data Phase
 
 -- Trạng thái phòng game (Giữ nguyên)
 data RoomState = RoomState
-  { players :: V.Vector (PlayerID, Text)
+  {
+    -- (THAY ĐỔI) Sửa 'players' để lưu cả 'Mode'
+    players :: V.Vector (PlayerID, Text, Mode)
   , dice    :: Dice
-  , cards   :: M.Map PlayerID ScoreCard -- SỬA LỖI 1: Dùng 'ScoreCard'
+  , cards   :: M.Map PlayerID ScoreCard
   , current :: PlayerID
   , phase   :: Phase
   } deriving (Show, Eq, Generic, A.FromJSON, A.ToJSON)
 
--- SỬA LỖI: Xóa 'emptyCard' khỏi đây (đã chuyển sang Core.hs)
-
 -- BIẾN BỊ THIẾU: Đây là biến mà 'Main.hs' cần (Giữ nguyên)
 initialRoomState :: RoomState
 initialRoomState = RoomState
-  { players = V.empty
+  { players = V.empty -- Kiểu (PlayerID, Text, Mode) sẽ được tự động áp dụng
   , dice    = [1, 1, 1, 1, 1]
   , cards   = M.empty
   , current = 0

@@ -6,35 +6,33 @@ module Net.Protocol where
 import GHC.Generics (Generic)
 import Data.Aeson (ToJSON, FromJSON)
 import Data.Text (Text)
-import qualified Data.Set as S -- SỬA LỖI 2: Thêm import S.Set
+import qualified Data.Set as S
 import Data.Map.Strict (Map)
 
--- SỬA LỖI 3: Import 'PlayerID', 'ScoreCard', v.v.
 import Common.Types (Category, Mode, RoomState, PlayerID, ScoreCard)
 
 
--- Client -> Server (Giữ nguyên)
+-- Client -> Server
 data C2S
   = Join { name :: Text, mode :: Mode }
   | Start
   | Roll
-  | Hold { indices :: [Int] } -- Client gửi [Int] (list)
+  | Hold { indices :: [Int] }
   | Score { category :: Category }
   | Chat { msg :: Text }
-  | ShowState
+  | Reset -- (THAY THẾ) Đã thay 'ShowState' bằng 'Reset'
   | Quit
   deriving (Show, Generic, ToJSON, FromJSON)
 
 
 -- Server -> Client
 data S2C
-  = Joined PlayerID Int -- SỬA LỖI 3: Dùng PlayerID
+  = Joined PlayerID Int
   | Lobby { lobbyPlayers :: [Text] }
   | State { state :: RoomState }
-  -- SỬA LỖI 2: Đồng bộ 'Prompt' với 'Phase' (dùng S.Set)
   | Prompt { yourTurn :: Bool, rollsLeft :: Int, held :: S.Set Int }
   | Info { text :: Text }
   | ErrorMsg { err :: Text }
-  | ChatMsg Text Text -- Thêm ChatMsg
+  | ChatMsg Text Text
   | End { finalScores :: [(Text, Int)] }
   deriving (Show, Generic, ToJSON, FromJSON)

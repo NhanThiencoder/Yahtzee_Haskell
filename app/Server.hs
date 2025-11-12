@@ -14,8 +14,8 @@ import           Control.Concurrent.STM
 import qualified Data.Vector                as V
 import           Data.Time.Clock.POSIX      (getPOSIXTime)
 import           Control.Exception          (SomeException, catch)
-import           Common.Types               (PlayerID, RoomState(..))
-import           Game.Room                  (Room(..), Event(..), newRoom, serveEvent) -- Đã import thêm Event, newRoom, serveEvent
+import           Common.Types               (PlayerID, RoomState(..), Mode(..)) -- (THAY ĐỔI) Import Mode
+import           Game.Room                  (Room(..), Event(..), newRoom, serveEvent)
 import           Net.Protocol
 
 -- Resolve listening address
@@ -46,16 +46,14 @@ runServer port = withSocketsDo $ do
   sock <- openSocket addr
   putStrLn $ "Server listening on *:" ++ port
 
-  -- Logger: đọc từ bản copy của broadcast channel
+  -- Logger
   _ <- forkIO $ do
     logChan <- atomically $ dupTChan (outbox room)
     forever $ do
       msg <- atomically $ readTChan logChan
       putStrLn $ "BROADCAST → " ++ BL.unpack (A.encode msg)
 
-  -- === THÊM VÒNG LẶP GAME TẠI ĐÂY ===
-  -- Luồng (thread) này liên tục đọc event từ `inbox`
-  -- và dùng `serveEvent` để xử lý chúng.
+  -- Vòng lặp Game
   _ <- forkIO $ forever $ do
     event <- atomically $ readTChan (inbox room)
     serveEvent room event
@@ -84,18 +82,18 @@ serveClient room sock peer pid = do
 
   -- Giải mã C2S
   let handleC2S cmd = case cmd of
-        Join nm _ -> sendEvent (EJoin pid nm)
-        -- SỬA LỖI Ở DÒNG NÀY:
+        -- (THAY ĐỔI) Gửi cả 'mode' (m) vào Event
+        Join nm m -> sendEvent (EJoin pid nm m)
         Start     -> sendEvent (EStart pid)
         Roll      -> sendEvent (ERoll pid)
         Hold is   -> sendEvent (EHold pid is)
         Score c   -> sendEvent (EScore pid c)
-        ShowState -> sendEvent (EShow pid)
+        Reset     -> sendEvent (EReset pid)
         Quit      -> ioError (userError "Client quit")
         Chat t    -> do
           st <- readTVarIO (stVar room)
           let senderName =
-                maybe "???" snd (V.find ((== pid) . fst) (players st))
+                maybe "???" (\(_,nm,_) -> nm) (V.find (\(p,_,_) -> p == pid) (players st))
           atomically $ writeTChan (outbox room) (ChatMsg senderName t)
 
       reader = forever $ do
@@ -113,9 +111,10 @@ serveClient room sock peer pid = do
         msg <- atomically $ readTChan out
         hPutStrLn h (BL.unpack (A.encode msg))
 
+      -- (SỬA LỖI) Sửa hàm cleanup
       cleanup (e :: SomeException) = do
-        putStrLn $ "Client disconnected from " -- ++ show peer -- (peer không có trong scope, bỏ qua)
-                ++ " with error: " ++ show e
+        putStrLn $ "Client disconnected from " ++ show peer
+                ++ " with error: " ++ show e -- (SỬA LỖI) Đã sửa logic nối chuỗi
         sendEvent (EQuit pid)
         hClose h
 

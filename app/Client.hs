@@ -15,6 +15,7 @@ import Common.Types
 import Net.Protocol
 import Text.Printf (printf)
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe)
 
 clearScreen :: IO ()
 clearScreen = callCommand "cls"  -- dùng 'clear' nếu chạy trên Linux/Mac
@@ -40,7 +41,7 @@ run host port name = withSocketsDo $ do
   _ <- forkIO $ forever $ do
     msgLine <- hGetLine h
     case A.eitherDecode' (BL.pack msgLine) :: Either String S2C of
-      Right msg -> renderMessage msg name
+      Right msg -> renderMessage msg (T.pack name)
       Left err  -> putStrLn ("[Decode error] " ++ err ++ " on: " ++ msgLine)
 
   -- Thread nhập lệnh người chơi
@@ -55,8 +56,8 @@ run host port name = withSocketsDo $ do
       ["/score", c]    -> case parseCategory c of
                             Just cat -> sendC2S (Score cat)
                             Nothing  -> putStrLn "Invalid category."
-      ["/show"]        -> sendC2S ShowState
-      ["/quit"]        -> sendC2S Quit >> pure () -- TODO: Thoát
+      ["/reset"]       -> sendC2S Reset
+      ["/quit"]        -> sendC2S Quit >> pure ()
       _                -> sendC2S (Chat (T.pack cmd))
 
 -- Tách ra để Main.hs (TUI) có thể tái sử dụng
@@ -75,46 +76,63 @@ open addr = do
   pure sock
 
 -- Hiển thị gọn gàng thông tin
-renderMessage :: S2C -> String -> IO ()
-renderMessage msg playerName = case msg of
+renderMessage :: S2C -> T.Text -> IO ()
+renderMessage msg myName = case msg of
   State st -> do
     clearScreen
-    renderScoreboard st playerName
+    renderScoreboard st myName
     putStrLn ""
-    if currentPlayer st == playerName
-      then putStrLn "It's your turn!"
-      else putStrLn $ "Waiting for " ++ currentPlayer st ++ "..."
+
+    let curName = currentPlayer st
+    let rolls = rollsLeftPhase st
+
+    if phase st == Idle
+      then putStrLn "Game idle. Press /start when ready."
+      else if curName == myName
+        then putStrLn $ "YOUR TURN. Rolls left: " ++ show rolls
+        else putStrLn $ "Waiting for " ++ T.unpack curName ++ "..."
+
     putStrLn $ "Dice: " ++ show (dice st)
-    putStrLn $ "Rolls left: " ++ show (rollsLeftPhase st)
     putStrLn ""
-  
-  -- SỬA LỖI ĐỒNG BỘ 1:
-  Prompt yourTurn rolls _ ->
-    putStrLn $ "[Turn] Your turn: " ++ show yourTurn ++ ". Rolls left: " ++ show rolls
+
+  Prompt _ _ _ ->
+    pure () -- Bỏ qua, vì 'State' đã xử lý
 
   Info t -> putStrLn ("[Info] " ++ T.unpack t)
   ErrorMsg t -> putStrLn ("[Error] " ++ (T.unpack t))
 
-  -- SỬA LỖI ĐỒNG BỘ 2:
+  -- (THÊM) Hiển thị chat
+  ChatMsg from t -> putStrLn $ "[" ++ T.unpack from ++ "] " ++ T.unpack t
+
   Joined seat totalSeats ->
     putStrLn $ "You joined. Your seat: " ++ show seat ++ "/" ++ show totalSeats
-  
+
   Lobby players ->
     putStrLn $ "Players in lobby: " ++ show players
 
   End results -> do
     clearScreen
     putStrLn "===== GAME OVER ====="
+    let m_myScore = lookup myName results
+    let m_maxScore = if null results then Nothing else Just (maximum (map snd results))
+
+    case (m_myScore, m_maxScore) of
+      (Just myScore, Just maxScore) | myScore == maxScore -> putStrLn "YOU WIN!"
+      _ -> putStrLn "You lose."
+
     mapM_ (\(n, s) -> putStrLn (T.unpack n ++ ": " ++ show s)) results
+
   _ -> pure ()
 
 
-currentPlayer :: RoomState -> String
+currentPlayer :: RoomState -> T.Text
 currentPlayer st =
   let ps = players st
-  in if V.null ps
-       then "-"
-       else T.unpack (snd (ps V.! current st))
+      curPid = current st
+      -- (SỬA) Xử lý 3-tuple (pid, name, mode)
+      mName = lookup curPid (map (\(a,b,_) -> (a, b)) (V.toList ps))
+  -- (SỬA LỖI) Dùng T.pack "?" để khớp kiểu T.Text
+  in fromMaybe (T.pack "?") mName
 
 rollsLeftPhase :: RoomState -> Int
 rollsLeftPhase st = case phase st of
@@ -139,28 +157,57 @@ parseCategory s = case map toLower s of
   _ -> Nothing
   where toLower = toEnum . fromEnum . Char.toLower
 
-renderScoreboard :: RoomState -> String -> IO ()
-renderScoreboard st playerName = do
-  let ps = players st
-      scoreMap = cards st
-      -- SỬA LỖI ĐỒNG BỘ 3 (Tối ưu):
+-- (SỬA LỖI) Toàn bộ hàm này cần cập nhật cho (PlayerID, Text, Mode)
+renderScoreboard :: RoomState -> T.Text -> IO ()
+renderScoreboard st myName = do
+  let ps = players st -- V.Vector (PlayerID, Text, Mode)
+      cardMap = cards st
       cats = [minBound .. maxBound] :: [Category]
-      names = map (T.unpack . snd) (V.toList ps)
+
+      -- (SỬA) Lấy Tên (phần tử thứ 2) từ 3-tuple
+      names = map (T.unpack . (\(_,b,_) -> b)) (V.toList ps)
+
       getScore pid cat =
         maybe "-" (maybe "-" show) $
-          M.lookup pid scoreMap >>= M.lookup cat
+          M.lookup pid cardMap >>= M.lookup cat
+
   putStrLn $ replicate 40 '='
-  putStrLn $ "Player: " ++ playerName
+  putStrLn $ "Player: " ++ T.unpack myName
   putStrLn $ replicate 40 '='
   putStrLn "Yahtzee - Live Scoreboard"
   putStrLn "----------------------------------------"
   putStrLn $ "Category          | " ++ unwords (map (printf "%6s" :: String -> String) names)
   putStrLn "----------------------------------------"
-  mapM_ (\cat -> do
-          printf "%-17s" (show cat)
-          mapM_ (\(pid, _) -> printf "| %6s " (getScore pid cat)) (V.toList ps)
-          putStrLn "") cats
+
+  let (upperCats, lowerCats) = splitAt 6 cats
+
+      -- (ĐÃ SỬA LOGIC BONUS)
+      getScoreInt pid cat = fromMaybe 0 $ M.lookup pid cardMap >>= M.lookup cat >>= id
+      sumUpper pid = sum [ getScoreInt pid cat | cat <- upperCats ]
+      getBonus pid = if sumUpper pid >= 63 then 35 else 0
+      getBonusDisplay pid = let s = sumUpper pid in s + getBonus pid
+      sumLower pid = sum [ getScoreInt pid cat | cat <- lowerCats ]
+      totalScore pid = getBonusDisplay pid + sumLower pid
+
+      -- Hàm in hàng
+      printRow cat = do
+        printf "%-17s" (show cat)
+        -- (SỬA) Xử lý 3-tuple (pid, name, mode)
+        mapM_ (\(pid, _, _) -> printf "| %6s " (getScore pid cat)) (V.toList ps)
+        putStrLn ""
+
+      -- Hàm in hàng tính toán
+      printCalcRow label calcFn = do
+        printf "%-17s" label
+        mapM_ (\(pid, _, _) -> printf "| %6s " (show (calcFn pid))) (V.toList ps)
+        putStrLn ""
+
+  -- In bảng
+  mapM_ printRow upperCats
   putStrLn "----------------------------------------"
-  -- TODO: Tính tổng (logic trong Game.Core.cardTotal)
-  putStrLn "Total             | ..."
+  printCalcRow "Bonus" getBonusDisplay
+  putStrLn "----------------------------------------"
+  mapM_ printRow lowerCats
+  putStrLn "----------------------------------------"
+  printCalcRow "Total" totalScore
   putStrLn "----------------------------------------"
